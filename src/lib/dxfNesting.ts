@@ -35,6 +35,49 @@ export interface NestingResult {
 const MIN_SPACING = 10; // мм минимальное расстояние между деталями
 const METAL_COST_PER_M2 = 100; // руб за м²
 
+// Проверка замкнутости контура (из DxfViewer)
+function isContourClosed(entity: any, tolerance = 1): boolean {
+  try {
+    if (entity.type === "CIRCLE" || entity.type === "ELLIPSE") {
+      return true;
+    }
+    
+    if (entity.type === "ARC" || entity.type === "LINE") {
+      return false;
+    }
+    
+    if (entity.type === "LWPOLYLINE" || entity.type === "POLYLINE") {
+      if (entity.shape || entity.closed) return true;
+      
+      if (entity.vertices && entity.vertices.length > 2) {
+        const first = entity.vertices[0];
+        const last = entity.vertices[entity.vertices.length - 1];
+        const distance = Math.sqrt(
+          Math.pow(last.x - first.x, 2) + Math.pow(last.y - first.y, 2)
+        );
+        return distance <= tolerance;
+      }
+    }
+    
+    if (entity.type === "SPLINE") {
+      if (entity.closed) return true;
+      
+      if (entity.controlPoints && entity.controlPoints.length > 2) {
+        const first = entity.controlPoints[0];
+        const last = entity.controlPoints[entity.controlPoints.length - 1];
+        const distance = Math.sqrt(
+          Math.pow(last.x - first.x, 2) + Math.pow(last.y - first.y, 2)
+        );
+        return distance <= tolerance;
+      }
+    }
+    
+    return false;
+  } catch (error) {
+    return false;
+  }
+}
+
 // Максимальные размеры листов в мм
 function getMaxSheetSize(thickness: number): { width: number; height: number } {
   if (thickness > 3.1) {
@@ -136,40 +179,48 @@ export function groupDxfEntities(dxfContent: string): DxfEntity[] {
 
   if (!dxf || !dxf.entities) return [];
 
-  const entities: DxfEntity[] = [];
-  const allEntities = dxf.entities;
-
-  // Создаем список всех сущностей с их bounding box
+  // Создаем список всех замкнутых сущностей с их bounding box
   const entityList: Array<{ entity: any; boundingBox: BoundingBox }> = [];
   
-  for (const entity of allEntities) {
+  for (const entity of dxf.entities) {
+    // ВАЖНО: Фильтруем только замкнутые контуры
+    if (!isContourClosed(entity)) {
+      console.log(`Skipping unclosed entity: ${entity.type}`);
+      continue;
+    }
+    
     const boundingBox = getEntityBoundingBox(entity);
     if (boundingBox) {
       entityList.push({ entity, boundingBox });
     }
   }
 
-  // Определяем родительские контуры (замкнутые полигоны)
+  console.log(`Total closed entities: ${entityList.length}`);
+
+  // Определяем родительские контуры и их дочерние элементы
   const parentEntities: DxfEntity[] = [];
   const childEntities = new Set<number>();
 
-  for (let i = 0; i < entityList.length; i++) {
-    const current = entityList[i];
-    
-    // Проверяем, является ли это замкнутым контуром
-    const isClosed =
-      (current.entity.type === "LWPOLYLINE" || current.entity.type === "POLYLINE") &&
-      (current.entity.shape === true || current.entity.closed === true);
+  // Сортируем по площади (большие сначала) для правильного определения родителей
+  const sortedByArea = entityList
+    .map((e, idx) => ({ ...e, originalIndex: idx }))
+    .sort((a, b) => {
+      const areaA = a.boundingBox.width * a.boundingBox.height;
+      const areaB = b.boundingBox.width * b.boundingBox.height;
+      return areaB - areaA;
+    });
 
-    if (!isClosed) continue;
+  for (const current of sortedByArea) {
+    // Пропускаем, если уже является чьим-то ребенком
+    if (childEntities.has(current.originalIndex)) continue;
 
     // Проверяем, какие другие сущности находятся внутри этого контура
     const children: DxfEntity[] = [];
 
-    for (let j = 0; j < entityList.length; j++) {
-      if (i === j || childEntities.has(j)) continue;
+    for (const other of sortedByArea) {
+      if (current.originalIndex === other.originalIndex || 
+          childEntities.has(other.originalIndex)) continue;
 
-      const other = entityList[j];
       const centerPoint = {
         x: (other.boundingBox.minX + other.boundingBox.maxX) / 2,
         y: (other.boundingBox.minY + other.boundingBox.maxY) / 2,
@@ -181,7 +232,7 @@ export function groupDxfEntities(dxfContent: string): DxfEntity[] {
           boundingBox: other.boundingBox,
           children: [],
         });
-        childEntities.add(j);
+        childEntities.add(other.originalIndex);
       }
     }
 
@@ -192,22 +243,10 @@ export function groupDxfEntities(dxfContent: string): DxfEntity[] {
     });
   }
 
-  // Добавляем все оставшиеся сущности как отдельные родительские
-  for (let i = 0; i < entityList.length; i++) {
-    if (!childEntities.has(i)) {
-      const alreadyParent = parentEntities.some(
-        (p) => p.entity === entityList[i].entity
-      );
-      
-      if (!alreadyParent) {
-        parentEntities.push({
-          entity: entityList[i].entity,
-          boundingBox: entityList[i].boundingBox,
-          children: [],
-        });
-      }
-    }
-  }
+  console.log(`Parent entities: ${parentEntities.length}, Children: ${childEntities.size}`);
+  parentEntities.forEach((p, i) => {
+    console.log(`Entity ${i}: type=${p.entity.type}, children=${p.children.length}`);
+  });
 
   return parentEntities;
 }
@@ -312,6 +351,80 @@ export function calculateNesting(
   return results.slice(0, 3); // Возвращаем топ-3 варианта
 }
 
+// Найти лучшую позицию для размещения детали
+function findBestPosition(
+  entity: DxfEntity,
+  placedEntities: PlacedEntity[],
+  maxSheet: { width: number; height: number },
+  rotations: number[]
+): PlacedEntity | null {
+  let bestPlacement: PlacedEntity | null = null;
+  let bestScore = Infinity;
+
+  for (const rotation of rotations) {
+    const bbox = getRotatedBoundingBox(getGroupBoundingBox(entity), rotation);
+
+    // Пробуем разные позиции
+    const positions: Array<{ x: number; y: number }> = [
+      { x: MIN_SPACING, y: MIN_SPACING }, // Начало листа
+    ];
+
+    // Добавляем позиции рядом с уже размещенными деталями
+    for (const placed of placedEntities) {
+      const placedBbox = getRotatedBoundingBox(
+        getGroupBoundingBox(placed.entity),
+        placed.rotation
+      );
+
+      // Справа от детали
+      positions.push({
+        x: placed.x + placedBbox.width + MIN_SPACING,
+        y: placed.y,
+      });
+
+      // Снизу от детали
+      positions.push({
+        x: placed.x,
+        y: placed.y + placedBbox.height + MIN_SPACING,
+      });
+    }
+
+    for (const pos of positions) {
+      // Проверяем, влезает ли в лист
+      if (
+        pos.x + bbox.width + MIN_SPACING > maxSheet.width ||
+        pos.y + bbox.height + MIN_SPACING > maxSheet.height
+      ) {
+        continue;
+      }
+
+      const candidate: PlacedEntity = {
+        entity,
+        x: pos.x,
+        y: pos.y,
+        rotation,
+      };
+
+      // Проверяем коллизии
+      const hasCollision = placedEntities.some((p) =>
+        checkCollision(p, candidate, MIN_SPACING)
+      );
+
+      if (!hasCollision) {
+        // Оценка позиции: предпочитаем позиции ближе к началу и с меньшей высотой
+        const score = pos.y * 10 + pos.x;
+
+        if (score < bestScore) {
+          bestScore = score;
+          bestPlacement = candidate;
+        }
+      }
+    }
+  }
+
+  return bestPlacement;
+}
+
 // Основной алгоритм упаковки
 function packEntities(
   entities: DxfEntity[],
@@ -319,72 +432,14 @@ function packEntities(
   rotations: number[]
 ): NestingResult {
   const placedEntities: PlacedEntity[] = [];
-  
-  let currentX = MIN_SPACING;
-  let currentY = MIN_SPACING;
-  let rowHeight = 0;
 
   for (const entity of entities) {
-    let placed = false;
-    let bestPlacement: PlacedEntity | null = null;
-
-    // Пробуем разные вращения
-    for (const rotation of rotations) {
-      const bbox = getRotatedBoundingBox(getGroupBoundingBox(entity), rotation);
-
-      // Проверяем, влезет ли в текущую позицию
-      if (currentX + bbox.width + MIN_SPACING <= maxSheet.width) {
-        const candidate: PlacedEntity = {
-          entity,
-          x: currentX,
-          y: currentY,
-          rotation,
-        };
-
-        // Проверяем коллизии
-        const hasCollision = placedEntities.some((p) =>
-          checkCollision(p, candidate, MIN_SPACING)
-        );
-
-        if (!hasCollision) {
-          bestPlacement = candidate;
-          placed = true;
-          break;
-        }
-      }
-    }
-
-    // Если не влезло, переходим на новую строку
-    if (!placed) {
-      currentX = MIN_SPACING;
-      currentY += rowHeight + MIN_SPACING;
-      rowHeight = 0;
-
-      // Пробуем снова
-      for (const rotation of rotations) {
-        const bbox = getRotatedBoundingBox(getGroupBoundingBox(entity), rotation);
-
-        if (currentX + bbox.width + MIN_SPACING <= maxSheet.width) {
-          bestPlacement = {
-            entity,
-            x: currentX,
-            y: currentY,
-            rotation,
-          };
-          placed = true;
-          break;
-        }
-      }
-    }
-
-    if (bestPlacement) {
-      placedEntities.push(bestPlacement);
-      const bbox = getRotatedBoundingBox(
-        getGroupBoundingBox(bestPlacement.entity),
-        bestPlacement.rotation
-      );
-      currentX += bbox.width + MIN_SPACING;
-      rowHeight = Math.max(rowHeight, bbox.height);
+    const placement = findBestPosition(entity, placedEntities, maxSheet, rotations);
+    
+    if (placement) {
+      placedEntities.push(placement);
+    } else {
+      console.warn("Could not place entity:", entity.entity.type);
     }
   }
 
