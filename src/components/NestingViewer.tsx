@@ -40,6 +40,12 @@ export const NestingViewer = ({ nestingResults, selectedVariant }: NestingViewer
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
+    console.log("Rendering nesting result:", {
+      placedEntities: result.placedEntities.length,
+      sheetWidth: result.sheetWidth,
+      sheetHeight: result.sheetHeight
+    });
+
     // Очищаем canvas
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.fillStyle = "#ffffff";
@@ -88,10 +94,20 @@ export const NestingViewer = ({ nestingResults, selectedVariant }: NestingViewer
     ctx.restore();
 
     // Рисуем размещенные детали
-    ctx.strokeStyle = "#000000";
-    const lineWidth = Math.max(1, 2 / zoom);
+    const lineWidth = Math.max(2, 3 / zoom);
 
-    for (const placed of result.placedEntities) {
+    console.log("Drawing entities:", result.placedEntities.length);
+
+    for (let i = 0; i < result.placedEntities.length; i++) {
+      const placed = result.placedEntities[i];
+      console.log(`Drawing placed entity ${i}:`, {
+        type: placed.entity.entity.type,
+        x: placed.x,
+        y: placed.y,
+        rotation: placed.rotation,
+        children: placed.entity.children.length
+      });
+
       ctx.save();
 
       const x = offsetX + placed.x * scale;
@@ -239,10 +255,17 @@ function drawEntity(
   lineWidth: number
 ) {
   const bbox = getEntityBoundingBox(entity);
-  if (!bbox) return;
+  if (!bbox) {
+    console.warn("No bounding box for entity:", entity.type);
+    return;
+  }
 
   ctx.strokeStyle = color;
   ctx.lineWidth = lineWidth;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+
+  console.log(`Drawing ${entity.type} at scale ${scale}`);
 
   switch (entity.type) {
     case "LINE":
@@ -302,5 +325,49 @@ function drawEntity(
       );
       ctx.stroke();
       break;
+
+    case "ELLIPSE":
+      ctx.beginPath();
+      const cx = (entity.center.x - bbox.minX) * scale;
+      const cy = (entity.center.y - bbox.minY) * scale;
+      
+      const a = entity.majorAxisEndPoint ? 
+        Math.sqrt(entity.majorAxisEndPoint.x ** 2 + entity.majorAxisEndPoint.y ** 2) * scale : 
+        (entity.radius || 0) * scale;
+      const b = a * (entity.axisRatio || 1);
+      
+      const rotation = entity.majorAxisEndPoint ? 
+        Math.atan2(entity.majorAxisEndPoint.y, entity.majorAxisEndPoint.x) : 0;
+      
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.rotate(rotation);
+      ctx.ellipse(0, 0, a, b, 0, 0, 2 * Math.PI);
+      ctx.restore();
+      ctx.stroke();
+      break;
+
+    case "SPLINE":
+      if (entity.controlPoints && entity.controlPoints.length > 1) {
+        ctx.beginPath();
+        const first = entity.controlPoints[0];
+        ctx.moveTo(
+          (first.x - bbox.minX) * scale,
+          (first.y - bbox.minY) * scale
+        );
+        
+        for (let i = 1; i < entity.controlPoints.length; i++) {
+          const p = entity.controlPoints[i];
+          ctx.lineTo(
+            (p.x - bbox.minX) * scale,
+            (p.y - bbox.minY) * scale
+          );
+        }
+        ctx.stroke();
+      }
+      break;
+
+    default:
+      console.warn(`Unhandled entity type: ${entity.type}`);
   }
 }
