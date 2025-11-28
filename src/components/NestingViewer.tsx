@@ -118,12 +118,12 @@ export const NestingViewer = ({ nestingResults, selectedVariant }: NestingViewer
         ctx.rotate((placed.rotation * Math.PI) / 180);
       }
 
-      // Рисуем внешний контур (синий)
-      drawEntity(ctx, placed.part.outerContour, scale, "#0066cc", lineWidth * 2);
+      // Рисуем внешний контур (синий) относительно bbox детали
+      drawEntity(ctx, placed.part.outerContour, scale, "#0066cc", lineWidth * 2, placed.part.boundingBox);
 
-      // Рисуем внутренние вырезы (красный)
+      // Рисуем внутренние вырезы (красный) относительно того же bbox
       for (const innerContour of placed.part.innerContours) {
-        drawEntity(ctx, innerContour, scale, "#cc0000", lineWidth * 1.5);
+        drawEntity(ctx, innerContour, scale, "#cc0000", lineWidth * 1.5, placed.part.boundingBox);
       }
 
       ctx.restore();
@@ -268,13 +268,11 @@ function drawEntity(
   entity: DxfEntity,
   scale: number,
   color: string,
-  lineWidth: number
+  lineWidth: number,
+  partBbox: { minX: number; minY: number; maxX: number; maxY: number }
 ) {
-  const bbox = getEntityBoundingBox(entity);
-  if (!bbox) {
-    console.warn("No bounding box for entity:", entity.type);
-    return;
-  }
+  // Используем bbox детали, а не bbox самой entity
+  // Это гарантирует, что все контуры детали рисуются в правильных относительных позициях
 
   ctx.strokeStyle = color;
   ctx.lineWidth = lineWidth;
@@ -286,12 +284,12 @@ function drawEntity(
       if (entity.vertices && entity.vertices.length >= 2) {
         ctx.beginPath();
         ctx.moveTo(
-          (entity.vertices[0].x - bbox.minX) * scale,
-          (entity.vertices[0].y - bbox.minY) * scale
+          (entity.vertices[0].x - partBbox.minX) * scale,
+          (entity.vertices[0].y - partBbox.minY) * scale
         );
         ctx.lineTo(
-          (entity.vertices[1].x - bbox.minX) * scale,
-          (entity.vertices[1].y - bbox.minY) * scale
+          (entity.vertices[1].x - partBbox.minX) * scale,
+          (entity.vertices[1].y - partBbox.minY) * scale
         );
         ctx.stroke();
       }
@@ -302,13 +300,13 @@ function drawEntity(
       if (entity.vertices && entity.vertices.length > 0) {
         ctx.beginPath();
         ctx.moveTo(
-          (entity.vertices[0].x - bbox.minX) * scale,
-          (entity.vertices[0].y - bbox.minY) * scale
+          (entity.vertices[0].x - partBbox.minX) * scale,
+          (entity.vertices[0].y - partBbox.minY) * scale
         );
         for (let i = 1; i < entity.vertices.length; i++) {
           ctx.lineTo(
-            (entity.vertices[i].x - bbox.minX) * scale,
-            (entity.vertices[i].y - bbox.minY) * scale
+            (entity.vertices[i].x - partBbox.minX) * scale,
+            (entity.vertices[i].y - partBbox.minY) * scale
           );
         }
         if (entity.shape || entity.closed) {
@@ -322,8 +320,8 @@ function drawEntity(
       if (entity.center && entity.radius !== undefined) {
         ctx.beginPath();
         ctx.arc(
-          (entity.center.x - bbox.minX) * scale,
-          (entity.center.y - bbox.minY) * scale,
+          (entity.center.x - partBbox.minX) * scale,
+          (entity.center.y - partBbox.minY) * scale,
           entity.radius * scale,
           0,
           2 * Math.PI
@@ -336,8 +334,8 @@ function drawEntity(
       if (entity.center && entity.radius !== undefined) {
         ctx.beginPath();
         ctx.arc(
-          (entity.center.x - bbox.minX) * scale,
-          (entity.center.y - bbox.minY) * scale,
+          (entity.center.x - partBbox.minX) * scale,
+          (entity.center.y - partBbox.minY) * scale,
           entity.radius * scale,
           (entity.startAngle || 0) * Math.PI / 180,
           (entity.endAngle || 0) * Math.PI / 180
@@ -349,8 +347,8 @@ function drawEntity(
     case "ELLIPSE":
       if (entity.center && entity.majorAxisEndPoint) {
         ctx.beginPath();
-        const cx = (entity.center.x - bbox.minX) * scale;
-        const cy = (entity.center.y - bbox.minY) * scale;
+        const cx = (entity.center.x - partBbox.minX) * scale;
+        const cy = (entity.center.y - partBbox.minY) * scale;
         
         const a = Math.sqrt(
           entity.majorAxisEndPoint.x ** 2 + entity.majorAxisEndPoint.y ** 2
@@ -376,15 +374,15 @@ function drawEntity(
         ctx.beginPath();
         const first = entity.controlPoints[0];
         ctx.moveTo(
-          (first.x - bbox.minX) * scale,
-          (first.y - bbox.minY) * scale
+          (first.x - partBbox.minX) * scale,
+          (first.y - partBbox.minY) * scale
         );
         
         for (let i = 1; i < entity.controlPoints.length; i++) {
           const p = entity.controlPoints[i];
           ctx.lineTo(
-            (p.x - bbox.minX) * scale,
-            (p.y - bbox.minY) * scale
+            (p.x - partBbox.minX) * scale,
+            (p.y - partBbox.minY) * scale
           );
         }
         

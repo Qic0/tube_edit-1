@@ -16,7 +16,7 @@ export function getDefaultNestingConfig(thickness: number): NestingConfig {
     edgeMargin: 10, // 10 мм от края листа
     maxSheetWidth: maxSheet.width,
     maxSheetHeight: maxSheet.height,
-    rotationAngles: [0, 90], // пробуем 0° и 90°
+    rotationAngles: [0, 45, 90, 135, 180, 225, 270, 315], // пробуем все углы с шагом 45°
     metalCostPerM2: 100, // руб за м²
   };
 }
