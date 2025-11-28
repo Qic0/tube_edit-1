@@ -11,7 +11,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
 import { Trash2, Edit, Package } from "lucide-react";
-import { calculateNesting, NestingResult } from "@/lib/dxfNesting";
+import { calculateNesting } from "@/lib/dxfNesting";
+import type { NestingResult } from "@/lib/dxf/types";
 import {
   DxfConfig,
   FinishedDxfPart,

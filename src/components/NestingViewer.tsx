@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { NestingResult, getEntityBoundingBox } from "@/lib/dxfNesting";
+import { NestingResult, getEntityBoundingBox, DxfEntity } from "@/lib/dxf";
 import { Button } from "@/components/ui/button";
 import { ZoomIn, ZoomOut, Maximize2 } from "lucide-react";
 
@@ -41,7 +41,7 @@ export const NestingViewer = ({ nestingResults, selectedVariant }: NestingViewer
     if (!ctx) return;
 
     console.log("Rendering nesting result:", {
-      placedEntities: result.placedEntities.length,
+      placedParts: result.placedParts.length,
       sheetWidth: result.sheetWidth,
       sheetHeight: result.sheetHeight
     });
@@ -96,16 +96,16 @@ export const NestingViewer = ({ nestingResults, selectedVariant }: NestingViewer
     // Рисуем размещенные детали
     const lineWidth = Math.max(2, 3 / zoom);
 
-    console.log("Drawing entities:", result.placedEntities.length);
+    console.log("Drawing parts:", result.placedParts.length);
 
-    for (let i = 0; i < result.placedEntities.length; i++) {
-      const placed = result.placedEntities[i];
-      console.log(`Drawing placed entity ${i}:`, {
-        type: placed.entity.entity.type,
+    for (let i = 0; i < result.placedParts.length; i++) {
+      const placed = result.placedParts[i];
+      console.log(`Drawing placed part ${i}:`, {
+        id: placed.part.id,
         x: placed.x,
         y: placed.y,
         rotation: placed.rotation,
-        children: placed.entity.children.length
+        innerContours: placed.part.innerContours.length
       });
 
       ctx.save();
@@ -118,12 +118,12 @@ export const NestingViewer = ({ nestingResults, selectedVariant }: NestingViewer
         ctx.rotate((placed.rotation * Math.PI) / 180);
       }
 
-      // Рисуем родительский контур (синий)
-      drawEntity(ctx, placed.entity.entity, scale, "#0066cc", lineWidth * 2);
+      // Рисуем внешний контур (синий)
+      drawEntity(ctx, placed.part.outerContour, scale, "#0066cc", lineWidth * 2);
 
-      // Рисуем дочерние контуры (зеленый)
-      for (const child of placed.entity.children) {
-        drawEntity(ctx, child.entity, scale, "#00aa00", lineWidth * 1.5);
+      // Рисуем внутренние вырезы (красный)
+      for (const innerContour of placed.part.innerContours) {
+        drawEntity(ctx, innerContour, scale, "#cc0000", lineWidth * 1.5);
       }
 
       ctx.restore();
@@ -225,22 +225,38 @@ export const NestingViewer = ({ nestingResults, selectedVariant }: NestingViewer
         />
       </div>
 
-      <div className="grid grid-cols-2 gap-3 p-3 bg-muted/50 rounded-lg flex-shrink-0">
-        <div>
-          <div className="text-xs text-muted-foreground">Площадь листа</div>
-          <div className="text-lg font-bold">{result.sheetArea.toFixed(3)} м²</div>
+      <div className="space-y-3 p-3 bg-muted/50 rounded-lg flex-shrink-0">
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <div className="text-xs text-muted-foreground">Площадь листа</div>
+            <div className="text-lg font-bold">{result.sheetArea.toFixed(3)} м²</div>
+          </div>
+          <div>
+            <div className="text-xs text-muted-foreground">Эффективность</div>
+            <div className="text-lg font-bold text-primary">{result.efficiency.toFixed(1)}%</div>
+          </div>
+          <div>
+            <div className="text-xs text-muted-foreground">Стоимость металла</div>
+            <div className="text-2xl font-bold text-primary">{result.metalCost.toFixed(2)} ₽</div>
+          </div>
+          <div>
+            <div className="text-xs text-muted-foreground">Использовано</div>
+            <div className="text-lg font-bold">{result.usedArea.toFixed(3)} м²</div>
+          </div>
         </div>
-        <div>
-          <div className="text-xs text-muted-foreground">Эффективность</div>
-          <div className="text-lg font-bold text-primary">{result.efficiency.toFixed(1)}%</div>
-        </div>
-        <div>
-          <div className="text-xs text-muted-foreground">Стоимость металла</div>
-          <div className="text-2xl font-bold text-primary">{result.metalCost.toFixed(2)} ₽</div>
-        </div>
-        <div>
-          <div className="text-xs text-muted-foreground">Использовано</div>
-          <div className="text-lg font-bold">{result.usedArea.toFixed(3)} м²</div>
+        
+        {result.unplacedParts && result.unplacedParts.length > 0 && (
+          <div className="p-2 bg-destructive/10 border border-destructive rounded-md">
+            <p className="text-xs font-semibold text-destructive">
+              ⚠ Не удалось разместить {result.unplacedParts.length} деталей
+            </p>
+          </div>
+        )}
+        
+        <div className="text-xs text-muted-foreground">
+          Размещено деталей: {result.placedParts.length}
+          {result.unplacedParts && result.unplacedParts.length > 0 && 
+            ` из ${result.placedParts.length + result.unplacedParts.length}`}
         </div>
       </div>
     </div>
@@ -249,7 +265,7 @@ export const NestingViewer = ({ nestingResults, selectedVariant }: NestingViewer
 
 function drawEntity(
   ctx: CanvasRenderingContext2D,
-  entity: any,
+  entity: DxfEntity,
   scale: number,
   color: string,
   lineWidth: number
@@ -265,20 +281,20 @@ function drawEntity(
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
 
-  console.log(`Drawing ${entity.type} at scale ${scale}`);
-
   switch (entity.type) {
     case "LINE":
-      ctx.beginPath();
-      ctx.moveTo(
-        (entity.vertices[0].x - bbox.minX) * scale,
-        (entity.vertices[0].y - bbox.minY) * scale
-      );
-      ctx.lineTo(
-        (entity.vertices[1].x - bbox.minX) * scale,
-        (entity.vertices[1].y - bbox.minY) * scale
-      );
-      ctx.stroke();
+      if (entity.vertices && entity.vertices.length >= 2) {
+        ctx.beginPath();
+        ctx.moveTo(
+          (entity.vertices[0].x - bbox.minX) * scale,
+          (entity.vertices[0].y - bbox.minY) * scale
+        );
+        ctx.lineTo(
+          (entity.vertices[1].x - bbox.minX) * scale,
+          (entity.vertices[1].y - bbox.minY) * scale
+        );
+        ctx.stroke();
+      }
       break;
 
     case "LWPOLYLINE":
@@ -303,48 +319,56 @@ function drawEntity(
       break;
 
     case "CIRCLE":
-      ctx.beginPath();
-      ctx.arc(
-        (entity.center.x - bbox.minX) * scale,
-        (entity.center.y - bbox.minY) * scale,
-        entity.radius * scale,
-        0,
-        2 * Math.PI
-      );
-      ctx.stroke();
+      if (entity.center && entity.radius !== undefined) {
+        ctx.beginPath();
+        ctx.arc(
+          (entity.center.x - bbox.minX) * scale,
+          (entity.center.y - bbox.minY) * scale,
+          entity.radius * scale,
+          0,
+          2 * Math.PI
+        );
+        ctx.stroke();
+      }
       break;
 
     case "ARC":
-      ctx.beginPath();
-      ctx.arc(
-        (entity.center.x - bbox.minX) * scale,
-        (entity.center.y - bbox.minY) * scale,
-        entity.radius * scale,
-        (entity.startAngle * Math.PI) / 180,
-        (entity.endAngle * Math.PI) / 180
-      );
-      ctx.stroke();
+      if (entity.center && entity.radius !== undefined) {
+        ctx.beginPath();
+        ctx.arc(
+          (entity.center.x - bbox.minX) * scale,
+          (entity.center.y - bbox.minY) * scale,
+          entity.radius * scale,
+          (entity.startAngle || 0) * Math.PI / 180,
+          (entity.endAngle || 0) * Math.PI / 180
+        );
+        ctx.stroke();
+      }
       break;
 
     case "ELLIPSE":
-      ctx.beginPath();
-      const cx = (entity.center.x - bbox.minX) * scale;
-      const cy = (entity.center.y - bbox.minY) * scale;
-      
-      const a = entity.majorAxisEndPoint ? 
-        Math.sqrt(entity.majorAxisEndPoint.x ** 2 + entity.majorAxisEndPoint.y ** 2) * scale : 
-        (entity.radius || 0) * scale;
-      const b = a * (entity.axisRatio || 1);
-      
-      const rotation = entity.majorAxisEndPoint ? 
-        Math.atan2(entity.majorAxisEndPoint.y, entity.majorAxisEndPoint.x) : 0;
-      
-      ctx.save();
-      ctx.translate(cx, cy);
-      ctx.rotate(rotation);
-      ctx.ellipse(0, 0, a, b, 0, 0, 2 * Math.PI);
-      ctx.restore();
-      ctx.stroke();
+      if (entity.center && entity.majorAxisEndPoint) {
+        ctx.beginPath();
+        const cx = (entity.center.x - bbox.minX) * scale;
+        const cy = (entity.center.y - bbox.minY) * scale;
+        
+        const a = Math.sqrt(
+          entity.majorAxisEndPoint.x ** 2 + entity.majorAxisEndPoint.y ** 2
+        ) * scale;
+        const b = a * (entity.axisRatio || 1);
+        
+        const rotation = Math.atan2(
+          entity.majorAxisEndPoint.y,
+          entity.majorAxisEndPoint.x
+        );
+        
+        ctx.save();
+        ctx.translate(cx, cy);
+        ctx.rotate(rotation);
+        ctx.ellipse(0, 0, a, b, 0, 0, 2 * Math.PI);
+        ctx.restore();
+        ctx.stroke();
+      }
       break;
 
     case "SPLINE":
@@ -363,6 +387,11 @@ function drawEntity(
             (p.y - bbox.minY) * scale
           );
         }
+        
+        if (entity.closed) {
+          ctx.closePath();
+        }
+        
         ctx.stroke();
       }
       break;
